@@ -10,8 +10,9 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 
-
+#=============================
 #       Dynamiques
+#===============================
 
 def f_in_A(t: float, u: NDArray) -> NDArray:
     """Dynamique dans A = {(x,y) : x+y < 1}.
