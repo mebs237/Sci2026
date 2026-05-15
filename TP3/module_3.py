@@ -1,12 +1,18 @@
-from typing import Tuple,List
+from typing import Tuple,List,NamedTuple,Any
 from collections import namedtuple
 import logging
 import numpy as np
+from math import hypot
 from numpy.typing import NDArray
 from scipy.integrate import solve_ivp
 from scipy.optimize import brentq
+from os import getenv
 
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+level = getenv("LOG_LEVEL" , "INFO")
+logging.basicConfig(
+    level= level , 
+    format="[%(levelname)s][%(name)s] [%(funcName)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -14,7 +20,7 @@ logger = logging.getLogger(__name__)
 #       Dynamiques
 #===============================
 
-def f_in_A(t: float, u: NDArray) -> NDArray:
+def f_in_A(t: float, u: NDArray[np.float64]) -> NDArray[np.float64]:
     """Dynamique dans A = {(x,y) : x+y < 1}.
 
     Équation : ∂²(x,y) = (-y, x-1)
@@ -24,14 +30,14 @@ def f_in_A(t: float, u: NDArray) -> NDArray:
     return np.array([dx, dy, -y, -1 + x])
 
 
-def f_in_B(t: float, u: NDArray) -> NDArray:
+def f_in_B(t: float, u: NDArray[np.float64]) -> NDArray[np.float64]:
     """Dynamique dans B = {(x,y) : x+y > 1}.
 
-    Équation : ∂²(x,y) = (‖v‖ẋ, -1 + ‖v‖ẏ)  avec v = (ẋ,ẏ)
+    Équation : ∂²(x,y) = (-‖v‖ẋ, -1 - ‖v‖ẏ)  avec v = (ẋ,ẏ)
     État étendu u = (x, y, ẋ, ẏ)
     """
     x, y, dx, dy = u
-    v_norm = np.sqrt(dx**2 + dy**2)
+    v_norm = hypot(dx,dy)
     return np.array([dx, dy, -v_norm * dx, -1 - v_norm * dy])
 
 
@@ -39,13 +45,13 @@ def f_in_B(t: float, u: NDArray) -> NDArray:
 # Événements de traversée (zone tampon ±eps autour de la frontière Γ )
 #======================================================================
 
-def event_A_to_B(eps: float = 1e-8):
+def event_A_to_B(eps: float = 1e-10):
     """Détecte quand la trajectoire a pénétré dans B d'un montant eps.
 
     φ(t) = x+y-1. On veut φ = +eps  →  f_event = φ - eps.
-    Déclenche quand f_event passe de négatif à positif (direction=+1).
+    Se déclenche quand f_event passe de négatif à positif (direction=+1).
     """
-    def event(t: float, u: NDArray) -> float:
+    def event(t: float, u: NDArray[np.float64]) -> float:
         return (u[0] + u[1] - 1) - eps
 
     event.terminal  = True
@@ -53,13 +59,13 @@ def event_A_to_B(eps: float = 1e-8):
     return event
 
 
-def event_B_to_A(eps: float = 1e-8):
+def event_B_to_A(eps: float = 1e-10):
     """Détecte quand la trajectoire a pénétré dans A d'un montant eps.
 
     φ(t) = x+y-1. On veut φ = -eps  →  f_event = φ + eps.
-    Déclenche quand f_event passe de positif à négatif (direction=-1).
+    Se déclenche quand f_event passe de positif à négatif (direction=-1).
     """
-    def event(t: float, u: NDArray) -> float:
+    def event(t: float, u: NDArray[np.float64]) -> float:
         return (u[0] + u[1] - 1) + eps
 
     event.terminal  = True
@@ -67,7 +73,7 @@ def event_B_to_A(eps: float = 1e-8):
     return event
 
 
-def hit_target(t: float, u: NDArray) -> float:
+def hit_target(t: float, u: NDArray[np.float64]) -> float:
     """Détecte quand x(t) = 2 (ligne d'arrivée)."""
     return u[0] - 2.0
 
@@ -75,31 +81,33 @@ hit_target.terminal = True
 
 
 
-#      fonction principale principale d'intégration
+#      fonction d'intégration
 
-solution = namedtuple("solution",['t','u'])
+Solution = NamedTuple('Solution',[ ('t', NDArray[np.float64]) , 
+                                  ('u' , NDArray[np.float64] ) 
+                                 ]
+                     )
 
 def solve_problem(s: float,
                   t_span: Tuple[float, float] = (0, 30),
                   max_cross: int = 100,
                   max_tf_extension: int = 50,
                   eps: float = 1e-10,
-                  log: bool = False,
-                  **kwargs) -> Tuple[NDArray, NDArray]:
+                  **kwargs:Any) -> Solution:
     """Résout l'EDO par morceaux jusqu'à ce que x(t) = 2.
 
     Args:
         s               : paramètre de tir — condition initiale u0 = (-2, -2, s, 2s)
         t_span          : intervalle d'intégration initial (t0, tf)
-        max_cross       : nombre maximal de traversées de la frontière Γ
+        max_cross       : nombre maximal de traversées de la frontière
         max_tf_extension: nombre maximal de doublements de tf si x=2 non atteint
-        eps             : demi-largeur de la zone tampon autour de Γ
-        log             : active les messages de logging
+        eps             : demi-largeur de la zone tampon autour de la frontière
         **kwargs        : options passées à solve_ivp (rtol, atol, method, ...)
 
     Returns:
-        t_all (NDArray) : tableau des temps (N,)
-        u_all (NDArray) : tableau des états (4, N) — lignes : x, y, ẋ, ẏ
+        Solution qui contient :
+        - t_all (NDArray[np.float64]) : tableau des temps (N,)
+        - u_all (NDArray[np.float64]) : tableau des états (4, N) — lignes : x, y, ẋ, ẏ
 
     Notes:
         • u0 = (-2, -2, s, 2s) est toujours dans A (φ = -5 ≪ 0) → in_A = True.
@@ -129,15 +137,13 @@ def solve_problem(s: float,
 
     while current_t < tf:
 
-        f         = f_in_A    if in_A else f_in_B
-        bnd_event = cross_A_to_B if in_A else cross_B_to_A
+        f  , bnd_event  = f_in_A , cross_A_to_B  if in_A else f_in_B ,cross_B_to_A 
 
         sol = solve_ivp(
             f,
             (current_t, tf),
             current_u,
             events=[bnd_event, hit_target],
-            dense_output=True,
             **kwargs
         )
 
@@ -157,11 +163,10 @@ def solve_problem(s: float,
             current_u = sol.y_events[1][0]
             t_all.append(current_t)
             u_all.append(current_u)
-            if log:
-                logger.info(
+            logger.info(
                     f"x=2 atteint à t={current_t:.4f}, y={current_u[1]:.6f} "
                     f"après {cross} traversées"
-                )
+            )
             break
 
         elif cross_bnd:
@@ -171,11 +176,10 @@ def solve_problem(s: float,
             u_all.append(current_u)
             in_A   = not in_A
             cross += 1
-            if log and cross % 10 == 0:
+            if cross % 10 == 0:
                 logger.debug(f"traversée n°{cross} à t={current_t:.4f}")
             if cross >= max_cross:
-                if log:
-                    logger.warning(f"max_cross={max_cross} atteint, arrêt")
+                logger.warning(f"max_cross={max_cross} atteint, arrêt")
                 break
 
         else:
@@ -184,35 +188,32 @@ def solve_problem(s: float,
             if current_t >= tf - 1e-10:
                 n_tf_ext += 1
                 if n_tf_ext > max_tf_extension:
-                    if log:
-                        logger.warning("max d'extensions de tf atteint, arrêt")
+                    logger.warning("max d'extensions de tf atteint, arrêt")
                     break
                 tf += tf - t0
-                if log:
-                    logger.info(f"tf étendu à {tf:.1f}")
+                logger.info(f"tf étendu à {tf:.1f}")
             else:
-                if log:
-                    logger.error(f"solve_ivp a échoué : status={sol.status}")
+                logger.error(f"solve_ivp a échoué : status={sol.status}")
                 break
 
-    return solution(np.array(t_all), np.array(u_all).T)
+    return Solution(np.array(t_all), np.array(u_all).T)
 
 
 # ==================================================
-#           Recherche de s* par dichotomie
+#           Recherche de s*
 # ==================================================
 
-def g(s: float, **kwargs) -> float:
-    """Erreur de tir : y(t*(s)) - 2, où t* est l'instant où x(t) = 2."""
+def g(s: float, **kwargs:Any) -> float:
+    """Ecart : y(t*(s)) - 2, à l'instant t* où x(t) = 2."""
     _, u = solve_problem(s, **kwargs)
     return u[1, -1] - 2.0
 
 
-def find_s_value(s_bracket: Tuple[float, float] = (0.0, 100.0), **kwargs) -> float:
-    """Trouve s* tel que la trajectoire atteigne exactement (2, 2).
+def find_s_value(s_bracket: Tuple[float, float] = (0.0, 100.0), **kwargs:Any) -> float:
+    """Trouve s* tel que la trajectoire atteigne (2, 2).
 
-    Résout g(s) = y(t*(s)) - 2 = 0 par dichotomie (brentq).
-
+    Résout l'équation g(s) = y(t*(s)) - 2 = 0
+    
     Args:
         s_bracket : intervalle [a, b] contenant s* (g doit changer de signe)
         **kwargs  : options transmises à solve_problem
@@ -233,5 +234,5 @@ def find_s_value(s_bracket: Tuple[float, float] = (0.0, 100.0), **kwargs) -> flo
 if __name__ == "__main__":
     s_optimal = find_s_value((10,15),rtol=1e-11,atol=1e-18)
 
-    print(f"la valeur optimal de s est : {s_optimal}")
+    logger.info(f"la valeur optimale de s est : {s_optimal:.8f}")
     
